@@ -1,11 +1,125 @@
 "use client";
 
-import { useRef, useMemo, useState, useEffect } from "react";
+import { useRef, useMemo, useState, useEffect, useCallback } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useTexture, Text, Html, CameraControls, Image } from "@react-three/drei";
-import { EffectComposer, DepthOfField } from "@react-three/postprocessing";
+import { EffectComposer, DepthOfField, Bloom } from "@react-three/postprocessing";
 import * as THREE from "three";
 import { useSpring, a } from "@react-spring/three";
+
+// --- Web Audio Engine (no external files needed) ---
+function createAudio() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    return ctx;
+  } catch { return null; }
+}
+
+let _audioCtx: AudioContext | null = null;
+function getAudio() {
+  if (!_audioCtx) _audioCtx = createAudio();
+  return _audioCtx;
+}
+
+function playHoverHum(start: boolean) {
+  const ctx = getAudio();
+  if (!ctx) return undefined;
+  try {
+    ctx.resume();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 180;
+    gain.gain.setValueAtTime(0, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(start ? 0.05 : 0, ctx.currentTime + 0.15);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start();
+    if (!start) { gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.3); osc.stop(ctx.currentTime + 0.35); }
+    return { stop: () => { gain.gain.setTargetAtTime(0, ctx.currentTime, 0.1); osc.stop(ctx.currentTime + 0.2); } };
+  } catch { return undefined; }
+}
+
+function playWarpSound() {
+  const ctx = getAudio();
+  if (!ctx) return;
+  try {
+    ctx.resume();
+    // Whoosh: freq sweep down
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(800, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(100, ctx.currentTime + 0.7);
+    gain.gain.setValueAtTime(0.15, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.7);
+    // Low pass to soften
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass'; filter.frequency.value = 1200;
+    osc.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.75);
+  } catch { }
+}
+
+function playClickSound() {
+  const ctx = getAudio();
+  if (!ctx) return;
+  try {
+    ctx.resume();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(600, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(300, ctx.currentTime + 0.12);
+    gain.gain.setValueAtTime(0.12, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.15);
+  } catch { }
+}
+
+// Ambient drone: 3 detuned sine oscillators for a space atmosphere hum
+let _ambientNodes: { oscs: OscillatorNode[]; masterGain: GainNode } | null = null;
+
+function startAmbient() {
+  const ctx = getAudio();
+  if (!ctx || _ambientNodes) return;
+  try {
+    ctx.resume();
+    const masterGain = ctx.createGain();
+    masterGain.gain.setValueAtTime(0, ctx.currentTime);
+    masterGain.gain.linearRampToValueAtTime(0.06, ctx.currentTime + 3);
+    masterGain.connect(ctx.destination);
+
+    const freqs = [55, 110.2, 165.5, 82.4];
+    const oscs = freqs.map(f => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = f;
+      g.gain.value = f === 55 ? 1 : 0.4;
+      osc.connect(g); g.connect(masterGain);
+      osc.start();
+      return osc;
+    });
+    _ambientNodes = { oscs, masterGain };
+  } catch { }
+}
+
+function stopAmbient() {
+  if (!_ambientNodes) return;
+  try {
+    const ctx = getAudio();
+    if (ctx) {
+      _ambientNodes.masterGain.gain.setTargetAtTime(0, ctx.currentTime, 0.5);
+      setTimeout(() => {
+        _ambientNodes?.oscs.forEach(o => { try { o.stop(); } catch { } });
+        _ambientNodes = null;
+      }, 2000);
+    }
+  } catch { }
+}
+
 
 // --- Types & Data ---
 type ViewLevel = 'universe' | 'cluster' | 'photo';
@@ -23,80 +137,108 @@ interface GalaxyData {
   name: string;
   color: string;
   position: [number, number, number];
-  photos: PhotoMetadata[];
+  rotation?: [number, number, number];
+  folder: string;
+  photoTitle: string;
+  photoDate: string;
+  photoDesc: string;
+  photos: PhotoMetadata[]; // populated at runtime
 }
 
-const MAX_PHOTOS_PER_GALAXY = 8; // Performance cap: limit visible cards per galaxy
+const MAX_PHOTOS_PER_GALAXY = 8;
 
-const GALAXIES: GalaxyData[] = [
+// Static metadata — photos are loaded dynamically from /api/photos/{folder}
+const GALAXY_CONFIGS: Omit<GalaxyData, 'photos'>[] = [
   {
-    id: 'g1',
-    name: "Summer 2023 ☀️",
+    id: 'dobby',
+    name: "Dobby 🐾",
     color: "#ffaa00",
-    position: [-15, 5, -20],
-    photos: [
-      "6848392B-CD45-46B1-8389-C983D3422E0A.jpg", "IMG_0035.PNG", "IMG_0119.JPG", "IMG_0137.JPG",
-      "IMG_0155.JPG", "IMG_0156.JPG", "IMG_0168.JPG", "IMG_0170.JPG", "IMG_0179.JPG", "IMG_0193.JPG",
-      "IMG_0274.JPG", "IMG_0278.JPG", "IMG_0300.JPG", "IMG_0394.JPG", "IMG_0402.JPG", "IMG_0439.JPG",
-      "IMG_9218.JPG", "IMG_9221.JPG", "IMG_9954.JPG", "IMG_9957.JPG", "IMG_9982.JPG"
-    ].slice(0, MAX_PHOTOS_PER_GALAXY).map((filename, i) => ({
-      id: `g1-p${i}`,
-      url: `/memories/g1/${filename}`,
-      title: `Summer Memory ${i + 1}`,
-      date: `Aug 2023`,
-      description: "Warm days, beautiful skies, and endless laughter. A collection of unforgettable moments.",
-    }))
+    position: [-22, 8, -10],
+    rotation: [0.3, 0.5, 0.2],
+    folder: 'dobby',
+    photoTitle: 'Dobby Moment',
+    photoDate: '2023',
+    photoDesc: 'My best friend. Every photo is a little universe of its own.',
   },
   {
-    id: 'g2',
+    id: 'lab',
     name: "Lab Life 🔬",
     color: "#00aaff",
-    position: [15, -5, -25],
-    photos: [
-      "IMG_0204.JPG", "IMG_0218.JPG", "IMG_1111.JPG", "IMG_1147.JPG", "IMG_1153.JPG",
-      "IMG_1166.JPG", "IMG_1171.JPG", "IMG_1215.JPG", "IMG_1220.JPG", "IMG_1432.JPG",
-      "IMG_1547.JPG", "IMG_1615.JPG", "IMG_1724.JPG", "IMG_1760.JPG", "IMG_1767.JPG"
-    ].slice(0, MAX_PHOTOS_PER_GALAXY).map((filename, i) => ({
-      id: `g2-p${i}`,
-      url: `/memories/g2/${filename}`,
-      title: `Lab Snapshot ${i + 1}`,
-      date: `Oct 2023`,
-      description: "Those late-night research sessions and endless cups of coffee. We worked so hard.",
-    }))
+    position: [24, -10, -18],
+    rotation: [-0.4, -0.3, 0.6],
+    folder: 'lab',
+    photoTitle: 'Lab Snapshot',
+    photoDate: 'Oct 2023',
+    photoDesc: 'Those late-night research sessions and endless cups of coffee. We worked so hard.',
   },
   {
-    id: 'g3',
+    id: 'travel',
     name: "Travel ✈️",
     color: "#aa00ff",
-    position: [-5, -12, -15],
-    photos: [
-      "96A97649-0A8E-442D-97C0-4C3114D3CA43.jpg", "IMG_0494.JPG", "IMG_0594.JPG", "IMG_0603.JPG",
-      "IMG_0879.JPG", "IMG_1695.jpeg", "IMG_9190.JPG"
-    ].slice(0, MAX_PHOTOS_PER_GALAXY).map((filename, i) => ({
-      id: `g3-p${i}`,
-      url: `/memories/g3/${filename}`,
-      title: `Adventure ${i + 1}`,
-      date: `Dec 2023`,
-      description: "Exploring new places around the world. Every street corner had a story.",
-    }))
+    position: [2, 18, -30],
+    rotation: [0.8, -0.2, -0.4],
+    folder: 'travel',
+    photoTitle: 'Adventure',
+    photoDate: 'Dec 2023',
+    photoDesc: 'Exploring new places around the world. Every street corner had a story.',
   },
   {
-    id: 'g4',
+    id: 'friends',
     name: "Friends & Family 💖",
     color: "#ff00aa",
-    position: [10, 10, -10],
-    photos: [
-      "IMG_9245.JPG", "IMG_9281.JPG", "IMG_9349.JPG", "IMG_9350.JPG", "IMG_9358.JPG",
-      "IMG_9421.JPG", "IMG_9442.JPG", "IMG_9444.JPG", "IMG_9445.JPG", "IMG_9454.JPG"
-    ].slice(0, MAX_PHOTOS_PER_GALAXY).map((filename, i) => ({
-      id: `g4-p${i}`,
-      url: `/memories/g4/${filename}`,
-      title: `Gathering ${i + 1}`,
-      date: `Jan 2024`,
-      description: "The people who matter the most. Countless memories made over good food and better conversations.",
-    }))
-  }
+    position: [-5, -16, -5],
+    rotation: [-0.6, 0.7, 0.1],
+    folder: 'friends',
+    photoTitle: 'Gathering',
+    photoDate: 'Jan 2024',
+    photoDesc: 'The people who matter the most. Countless memories made over good food and better conversations.',
+  },
+  {
+    id: 'food',
+    name: "Food & Taste 🍜",
+    color: "#88ff44",
+    position: [-18, -8, -35],
+    rotation: [0.2, 0.9, -0.3],
+    folder: 'food',
+    photoTitle: 'Delicious Moment',
+    photoDate: '2024',
+    photoDesc: 'Every meal is a memory. From street food to home cooking, a journey through flavours.',
+  },
+  {
+    id: 'climbing',
+    name: "Climbing 🧗",
+    color: "#00ccff",
+    position: [14, 12, -42],
+    rotation: [-0.3, -0.8, 0.5],
+    folder: 'climbing',
+    photoTitle: 'Summit',
+    photoDate: '2024',
+    photoDesc: 'Reaching new heights, one hold at a time. The wall, the sweat, and the view from the top.',
+  },
+  {
+    id: 'spring',
+    name: "Spring & Sakura 🌸",
+    color: "#ffaac8",
+    position: [8, -14, -22],
+    rotation: [0.5, -0.4, 0.7],
+    folder: 'spring',
+    photoTitle: 'Blossom',
+    photoDate: 'Spring 2024',
+    photoDesc: 'Cherry blossoms, warm breezes, and the brief beauty of spring. A season that never lasts long enough.',
+  },
+  {
+    id: 'cooking',
+    name: "Cooking 👨‍🍳",
+    color: "#ff7733",
+    position: [-30, 14, -20],
+    rotation: [-0.2, 0.6, -0.5],
+    folder: 'cooking',
+    photoTitle: 'Recipe',
+    photoDate: '2024',
+    photoDesc: 'From prep to plating — the art of turning ingredients into something special.',
+  },
 ];
+
 
 // --- Fallback Texture Helper ---
 function useAsyncTexture(url: string) {
@@ -130,40 +272,144 @@ function useAsyncTexture(url: string) {
 
 // --- Components ---
 
-function BackgroundStars({ count = 1000 }) {
+function BackgroundStars({ count = 2000 }) {
   const pointsRef = useRef<THREE.Points>(null);
-  const [positions] = useState(() => {
+  const positions = useMemo(() => {
     const coords = new Float32Array(count * 3);
+    // Two layers: close faint stars + far dim stars
     for (let i = 0; i < count; i++) {
-      coords[i * 3] = (Math.random() - 0.5) * 100;
-      coords[i * 3 + 1] = (Math.random() - 0.5) * 100;
-      coords[i * 3 + 2] = (Math.random() - 0.5) * 100 - 20;
+      const layer = i < count * 0.7 ? 120 : 200;
+      coords[i * 3] = (Math.random() - 0.5) * layer;
+      coords[i * 3 + 1] = (Math.random() - 0.5) * layer;
+      coords[i * 3 + 2] = (Math.random() - 0.5) * layer - 20;
     }
     return coords;
-  });
+  }, [count]);
 
-  useFrame((state, delta) => {
+  useFrame((_, delta) => {
     if (pointsRef.current) {
-      pointsRef.current.rotation.y += delta * 0.005;
-      pointsRef.current.rotation.x += delta * 0.002;
+      pointsRef.current.rotation.y += delta * 0.003;
+      pointsRef.current.rotation.x += delta * 0.001;
     }
   });
 
   return (
     <points ref={pointsRef}>
       <bufferGeometry>
-        <bufferAttribute
-          attach="attributes-position"
-          args={[positions, 3]}
-          array={positions}
-          count={positions.length / 3}
-          itemSize={3}
-        />
+        <bufferAttribute attach="attributes-position" args={[positions, 3]} array={positions} count={positions.length / 3} itemSize={3} />
       </bufferGeometry>
-      <pointsMaterial size={0.05} color="#ffffff" transparent opacity={0.3} sizeAttenuation />
+      <pointsMaterial size={0.04} color="#ffffff" transparent opacity={0.5} sizeAttenuation />
     </points>
   );
 }
+
+// --- Nebula Layer: soft translucent cloud planes ---
+const NEBULAE = [
+  { color: '#3344ff', pos: [-30, 8, -60] as [number, number, number], scale: [50, 30] },
+  { color: '#ff2266', pos: [35, -10, -80] as [number, number, number], scale: [60, 40] },
+  { color: '#aa00ff', pos: [0, 20, -70] as [number, number, number], scale: [55, 35] },
+  { color: '#00ffaa', pos: [-20, -20, -55] as [number, number, number], scale: [40, 25] },
+  { color: '#ff8800', pos: [20, 5, -90] as [number, number, number], scale: [70, 45] },
+];
+
+function NebulaLayer() {
+  const groupRef = useRef<THREE.Group>(null);
+
+  const nebulaTexture = useMemo(() => {
+    // Generate a radial gradient texture for the nebula sprite
+    const size = 256;
+    const data = new Uint8Array(size * size * 4);
+    const cx = size / 2, cy = size / 2;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const dx = x - cx, dy = y - cy;
+        const dist = Math.sqrt(dx * dx + dy * dy) / (size * 0.5);
+        const alpha = Math.max(0, 1 - dist * dist) * 180;
+        const i = (y * size + x) * 4;
+        data[i] = 255; data[i + 1] = 255; data[i + 2] = 255; data[i + 3] = alpha;
+      }
+    }
+    const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+    tex.needsUpdate = true;
+    return tex;
+  }, []);
+
+  useFrame((state) => {
+    if (groupRef.current) {
+      groupRef.current.rotation.z = Math.sin(state.clock.elapsedTime * 0.02) * 0.02;
+    }
+  });
+
+  return (
+    <group ref={groupRef}>
+      {NEBULAE.map((n, i) => (
+        <mesh key={i} position={n.pos} rotation={[0.1 * i, 0.2 * i, 0]}>
+          <planeGeometry args={[n.scale[0], n.scale[1]]} />
+          <meshBasicMaterial color={n.color} map={nebulaTexture} transparent opacity={0.07 + (i % 3) * 0.02} depthWrite={false} blending={THREE.AdditiveBlending} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// --- Shooting Stars ---
+function ShootingStars() {
+  const linesRef = useRef<(THREE.Line | null)[]>([]);
+  const metaRef = useRef<{ active: boolean; t: number; dir: THREE.Vector3; start: THREE.Vector3 }[]>(
+    Array.from({ length: 5 }, () => ({ active: false, t: 99, dir: new THREE.Vector3(), start: new THREE.Vector3() }))
+  );
+  const timerRef = useRef(Math.random() * 4 + 2);
+
+  useFrame((_, delta) => {
+    timerRef.current -= delta;
+    if (timerRef.current <= 0) {
+      // Spawn a shooting star on a random inactive slot
+      const slot = metaRef.current.findIndex(m => !m.active);
+      if (slot !== -1) {
+        const m = metaRef.current[slot];
+        m.active = true; m.t = 0;
+        m.start.set((Math.random() - 0.5) * 80, (Math.random() * 30) + 10, (Math.random() - 0.5) * 40 - 20);
+        m.dir.set(Math.random() * 0.5 - 1, -Math.random() * 0.3 - 0.1, -0.2).normalize();
+      }
+      timerRef.current = Math.random() * 5 + 2;
+    }
+
+    metaRef.current.forEach((m, i) => {
+      const line = linesRef.current[i];
+      if (!line) return;
+      if (!m.active) { line.visible = false; return; }
+      m.t += delta * 2.5;
+      if (m.t > 1) { m.active = false; line.visible = false; return; }
+      line.visible = true;
+      const head = m.start.clone().addScaledVector(m.dir, m.t * 25);
+      const tail = head.clone().addScaledVector(m.dir, -5);
+      const pos = line.geometry.attributes.position as THREE.BufferAttribute;
+      pos.setXYZ(0, tail.x, tail.y, tail.z);
+      pos.setXYZ(1, head.x, head.y, head.z);
+      pos.needsUpdate = true;
+      const mat = line.material as THREE.LineBasicMaterial;
+      mat.opacity = Math.sin(m.t * Math.PI) * 0.9;
+    });
+  });
+
+  return (
+    <>
+      {Array.from({ length: 5 }, (_, i) => {
+        const posArr = new Float32Array([0, 0, 0, 1, 1, 1]);
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+        return (
+          <primitive
+            key={i}
+            object={new THREE.Line(geo, new THREE.LineBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0 }))}
+            ref={(el: THREE.Line | null) => { linesRef.current[i] = el; }}
+          />
+        );
+      })}
+    </>
+  );
+}
+
 
 // Always-visible galaxy label with distance-based opacity
 function GalaxyLabel({ name, hovered, color }: { name: string; hovered: boolean; color: string }) {
@@ -205,7 +451,7 @@ function GalaxyLabel({ name, hovered, color }: { name: string; hovered: boolean;
   );
 }
 
-// Level 1: A single Galaxy cluster of particles
+// Level 1: A single Galaxy cluster of particles — spiral disc design
 function GalaxyParticleCluster({
   galaxy,
   onClick
@@ -213,63 +459,114 @@ function GalaxyParticleCluster({
   galaxy: GalaxyData;
   onClick: () => void;
 }) {
-  const count = 400;
-  const pointsRef = useRef<THREE.Points>(null);
-  const [hovered, setHovered] = useState(false);
+  // Scale everything by photo count: 0 photos = small, 8 = large
+  const photoCount = galaxy.photos.length;
+  const sizeFactor = 0.5 + Math.min(photoCount / 8, 1) * 0.8; // 0.5 → 1.3
+  const count = Math.round(300 + photoCount * 55);             // 300 → 740
+  const discRadius = 2.5 + photoCount * 0.2;                  // 2.5 → 4.1
+  const coreCount = 40 + photoCount * 8;
 
-  const [positions, colors] = useMemo(() => {
+  const pointsRef = useRef<THREE.Points>(null);
+  const coreRef = useRef<THREE.Points>(null);
+  const ringRef = useRef<THREE.Mesh>(null);
+  const [hovered, setHovered] = useState(false);
+  const humRef = useRef<{ stop: () => void } | undefined>(undefined);
+
+  const [positions, colors, corePosArr] = useMemo(() => {
     const pos = new Float32Array(count * 3);
     const col = new Float32Array(count * 3);
     const baseColor = new THREE.Color(galaxy.color);
-    const centerColor = new THREE.Color(0xffffff);
+    const whiteColor = new THREE.Color(0xffffff);
+    const corePos = new Float32Array(coreCount * 3);
 
     for (let i = 0; i < count; i++) {
-      const r = Math.pow(Math.random(), 2) * 4;
-      const theta = Math.random() * 2 * Math.PI;
-      const phi = Math.acos(2 * Math.random() - 1);
-
-      pos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      pos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-      pos[i * 3 + 2] = r * Math.cos(phi);
-
-      const mixRatio = Math.min(r / 4, 1);
-      const mixedColor = centerColor.clone().lerp(baseColor, mixRatio);
-
-      col[i * 3] = mixedColor.r;
-      col[i * 3 + 1] = mixedColor.g;
-      col[i * 3 + 2] = mixedColor.b;
+      const arm = Math.floor(Math.random() * 3);
+      const t = Math.pow(Math.random(), 0.7);
+      const r = 0.2 + t * discRadius;
+      const spiralAngle = t * Math.PI * 5 + (arm / 3) * Math.PI * 2;
+      const scatter = (1 - t) * 0.6 + 0.1;
+      pos[i * 3] = Math.cos(spiralAngle) * r + (Math.random() - 0.5) * scatter;
+      pos[i * 3 + 1] = (Math.random() - 0.5) * 0.5 * (1 - t * 0.7);
+      pos[i * 3 + 2] = Math.sin(spiralAngle) * r + (Math.random() - 0.5) * scatter;
+      const mixRatio = Math.min(r / discRadius, 1);
+      const c = whiteColor.clone().lerp(baseColor, mixRatio * mixRatio);
+      col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
     }
-    return [pos, col];
-  }, [galaxy.color]);
+    for (let i = 0; i < coreCount; i++) {
+      const r = Math.pow(Math.random(), 3) * 1.0;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      corePos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      corePos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta) * 0.4;
+      corePos[i * 3 + 2] = r * Math.cos(phi);
+    }
+    return [pos, col, corePos];
+  }, [galaxy.color, count, coreCount, discRadius]);
+
+  const initRot = galaxy.rotation ?? [0, 0, 0];
 
   useFrame((state, delta) => {
-    if (pointsRef.current) {
-      pointsRef.current.rotation.y += delta * 0.2;
-      pointsRef.current.rotation.z += delta * 0.1;
+    const speed = hovered ? 0.3 : 0.12;
+    if (pointsRef.current) pointsRef.current.rotation.y += delta * speed;
+    if (coreRef.current) {
+      coreRef.current.rotation.y += delta * speed * 1.6;
+      const pulse = 1 + Math.sin(state.clock.elapsedTime * 2.5) * 0.1;
+      coreRef.current.scale.setScalar(pulse);
+    }
+    if (ringRef.current) {
+      ringRef.current.rotation.z += delta * 0.03;
+      const breathe = 1 + Math.sin(state.clock.elapsedTime * 1.1) * 0.04;
+      ringRef.current.scale.setScalar(breathe);
     }
   });
 
   const { scale } = useSpring({
-    scale: hovered ? 1.2 : 1,
-    config: { mass: 1, tension: 280, friction: 60 }
+    scale: hovered ? 1.1 * sizeFactor : sizeFactor,
+    config: { mass: 1, tension: 200, friction: 50 }
   });
 
   return (
-    <a.group position={galaxy.position} scale={scale}>
+    <a.group
+      position={galaxy.position}
+      scale={scale}
+      rotation={initRot as [number, number, number]}
+    >
+      <pointLight position={[0, 0, 0]} intensity={hovered ? 5 : 2.5} color={galaxy.color} distance={discRadius * 4} decay={2} />
+
+      {/* Outer dust ring */}
+      <mesh ref={ringRef} rotation={[Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[discRadius * 0.9, discRadius * 1.35, 64]} />
+        <meshBasicMaterial color={galaxy.color} transparent opacity={0.06} side={THREE.DoubleSide} depthWrite={false} blending={THREE.AdditiveBlending} />
+      </mesh>
+
+      {/* Core */}
+      <points ref={coreRef}>
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position" args={[corePosArr, 3]} array={corePosArr} count={coreCount} itemSize={3} />
+        </bufferGeometry>
+        <pointsMaterial size={0.22} color="#ffffff" transparent opacity={0.98} sizeAttenuation />
+      </points>
+
+      {/* Spiral disc */}
       <points
         ref={pointsRef}
-        onClick={(e) => { e.stopPropagation(); onClick(); }}
-        onPointerOver={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer'; }}
-        onPointerOut={() => { setHovered(false); document.body.style.cursor = 'auto'; }}
+        onClick={(e) => { e.stopPropagation(); playWarpSound(); onClick(); }}
+        onPointerOver={(e) => {
+          e.stopPropagation(); setHovered(true); document.body.style.cursor = 'pointer';
+          humRef.current = playHoverHum(true) ?? undefined;
+        }}
+        onPointerOut={() => {
+          setHovered(false); document.body.style.cursor = 'auto';
+          humRef.current?.stop(); humRef.current = undefined;
+        }}
       >
         <bufferGeometry>
           <bufferAttribute attach="attributes-position" args={[positions, 3]} array={positions} count={count} itemSize={3} />
           <bufferAttribute attach="attributes-color" args={[colors, 3]} array={colors} count={count} itemSize={3} />
         </bufferGeometry>
-        <pointsMaterial size={0.1} vertexColors transparent opacity={0.8} />
+        <pointsMaterial size={0.07} vertexColors transparent opacity={hovered ? 1 : 0.82} sizeAttenuation />
       </points>
 
-      {/* Always-visible label with distance fade */}
       <GalaxyLabel name={galaxy.name} hovered={hovered} color={galaxy.color} />
     </a.group>
   );
@@ -464,7 +761,7 @@ function PhotoCard({
       position={basePos}
       onClick={(e) => {
         e.stopPropagation();
-        if (level === 'cluster') onCardClick();
+        if (level === 'cluster') { playClickSound(); onCardClick(); }
       }}
       onPointerOver={(e) => {
         e.stopPropagation();
@@ -594,6 +891,17 @@ function CameraRig({
         true
       );
     }
+    // Set zoom limits per view level
+    if (level === 'universe') {
+      controls.minDistance = 15;  // Don't zoom in too close to galaxies
+      controls.maxDistance = 80;  // Don't zoom out so far they disappear
+    } else if (level === 'cluster') {
+      controls.minDistance = 5;   // Stop before entering a card
+      controls.maxDistance = 35;  // Stay inside the cluster space
+    } else if (level === 'photo') {
+      controls.minDistance = 3;   // Can get close to photo
+      controls.maxDistance = 22;  // Don't zoom out past photo cluster
+    }
   }, [level, activeGalaxy]);
 
   return <CameraControls ref={controlsRef} makeDefault />;
@@ -611,6 +919,7 @@ function Scene({
   setActivePhotoId,
   onGalaxyEnter,
   onClusterReady,
+  galaxies,
 }: {
   level: ViewLevel;
   setLevel: (l: ViewLevel) => void;
@@ -621,6 +930,7 @@ function Scene({
   setActivePhotoId: (id: string | null) => void;
   onGalaxyEnter: () => void;
   onClusterReady: () => void;
+  galaxies: GalaxyData[];
 }) {
   const [warpActive, setWarpActive] = useState(false);
   // Global Keybindings for navigation
@@ -655,9 +965,10 @@ function Scene({
       <directionalLight position={[5, 10, 5]} intensity={1.5} color="#ffffff" />
       <directionalLight position={[-5, -5, -5]} intensity={0.5} color="#4455ff" />
       <BackgroundStars count={2000} />
+      <ShootingStars />
 
       {/* Level 1: Universe */}
-      {level === 'universe' && GALAXIES.map((galaxy) => (
+      {level === 'universe' && galaxies.map((galaxy: GalaxyData) => (
         <GalaxyParticleCluster
           key={galaxy.id}
           galaxy={galaxy}
@@ -697,6 +1008,7 @@ function Scene({
       {level === 'universe' && (
         <EffectComposer>
           <DepthOfField focusDistance={0.05} focalLength={0.15} bokehScale={3} height={360} />
+          <Bloom luminanceThreshold={0.6} luminanceSmoothing={0.9} intensity={1.2} />
         </EffectComposer>
       )}
     </>
@@ -768,21 +1080,55 @@ function LoadingScreen({ visible }: { visible: boolean }) {
 
 // --- Gallery Page ---
 export default function GalleryPage() {
+  const [galaxies, setGalaxies] = useState<GalaxyData[]>(() =>
+    GALAXY_CONFIGS.map(cfg => ({ ...cfg, photos: [] }))
+  );
   const [galaxyLoading, setGalaxyLoading] = useState(false);
+  const [muted, setMuted] = useState(false);
   const [level, setLevel] = useState<ViewLevel>('universe');
   const [activeGalaxyId, setActiveGalaxyId] = useState<string | null>(null);
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
 
+  // Dynamically load photo filenames from the API on mount
+  useEffect(() => {
+    Promise.all(
+      GALAXY_CONFIGS.map(async (cfg) => {
+        try {
+          const res = await fetch(`/api/photos/${cfg.folder}`);
+          const files: string[] = await res.json();
+          const photos: PhotoMetadata[] = files
+            .slice(0, MAX_PHOTOS_PER_GALAXY)
+            .map((filename, i) => ({
+              id: `${cfg.id}-p${i}`,
+              url: `/memories/${cfg.folder}/${filename}`,
+              title: `${cfg.photoTitle} ${i + 1}`,
+              date: cfg.photoDate,
+              description: cfg.photoDesc,
+            }));
+          return { ...cfg, photos };
+        } catch {
+          return { ...cfg, photos: [] };
+        }
+      })
+    ).then(setGalaxies);
+  }, []);
+
+  useEffect(() => {
+    if (!muted) { startAmbient(); } else { stopAmbient(); }
+    return () => stopAmbient();
+  }, [muted]);
+
   const activeGalaxy = useMemo(() =>
-    GALAXIES.find(g => g.id === activeGalaxyId) || null
-    , [activeGalaxyId]);
+    galaxies.find((g: GalaxyData) => g.id === activeGalaxyId) || null
+    , [galaxies, activeGalaxyId]);
 
   const activePhoto = useMemo(() =>
-    activeGalaxy?.photos.find(p => p.id === activePhotoId) || null
+    activeGalaxy?.photos.find((p: PhotoMetadata) => p.id === activePhotoId) || null
     , [activeGalaxy, activePhotoId]);
 
+
   return (
-    <div style={{ width: "100vw", height: "100vh", backgroundColor: "#020205", overflow: "hidden", position: "relative" }}>
+    <div style={{ width: "100vw", height: "100vh", backgroundColor: "#020205", overflow: "hidden", position: "relative" }} className="font-[family-name:var(--font-space)]">
       <Canvas
         camera={{ position: [0, 0, 40], fov: 45 }}
         dpr={[1, 1.5]}
@@ -798,10 +1144,32 @@ export default function GalleryPage() {
           setActivePhotoId={setActivePhotoId}
           onGalaxyEnter={() => setGalaxyLoading(true)}
           onClusterReady={() => setGalaxyLoading(false)}
+          galaxies={galaxies}
         />
       </Canvas>
 
       {/* ── Fixed HTML Overlays (outside Canvas, always visible) ── */}
+
+      {/* Sound toggle — top right */}
+      <button
+        onClick={() => setMuted(m => !m)}
+        style={{ position: 'fixed', top: 28, right: 28, zIndex: 100 }}
+        className="w-10 h-10 flex items-center justify-center rounded-full bg-black/40 backdrop-blur-xl border border-white/10 hover:border-white/30 text-white transition-all shadow-xl"
+        title={muted ? 'Unmute' : 'Mute'}
+      >
+        <span style={{ fontSize: 16 }}>{muted ? '🔇' : '🔊'}</span>
+      </button>
+
+      {/* Galaxy name header — shown when inside a galaxy */}
+      {(level === 'cluster' || level === 'photo') && activeGalaxy && (
+        <div style={{ position: 'fixed', top: 28, left: '50%', transform: 'translateX(-50%)', zIndex: 100 }}>
+          <div className="flex items-center gap-2 px-5 py-2 bg-black/40 backdrop-blur-xl border border-white/10 rounded-full shadow-xl">
+            <div style={{ width: 8, height: 8, borderRadius: '50%', background: activeGalaxy.color, boxShadow: `0 0 8px ${activeGalaxy.color}` }} />
+            <span className="text-white text-sm font-medium tracking-wide">{activeGalaxy.name}</span>
+            <span className="text-white/30 text-xs">{activeGalaxy.photos.length} memories</span>
+          </div>
+        </div>
+      )}
 
       {/* Back button */}
       {level !== 'universe' && (
