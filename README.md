@@ -1,35 +1,53 @@
-# Floating Memories 🌌
+# 🌌 Floating Memories
 
-An interactive 3D photo gallery built with Three.js and React Three Fiber. Your memories floating in space.
+> **Your personal memory galaxy. Navigate through the cosmos of your life's moments.**
 
-## Preview Concept
+An immersive 3D interactive photo gallery that transforms your photos into a navigable universe. Each collection of memories becomes a galaxy you can explore, with photos floating as cards in zero gravity.
 
-The gallery simulates photos floating in zero gravity, allowing users to explore memories in a spatial and interactive way.
+[![Live Demo](https://img.shields.io/badge/🚀-Live%20Demo-blue?style=for-the-badge)](https://floating-memories.vercel.app)
 
-Cards gently drift and rotate in space.
-When a card is clicked, it moves forward and flips to reveal additional information.
+## ✨ Features
 
-## Features
+### 🌠 Three-Level Exploration
+- **Universe View** → Navigate between memory galaxies in deep space
+- **Galaxy View** → Enter a galaxy to see photos floating as 3D cards  
+- **Photo Detail** → Focus on individual memories with metadata
 
-- 🎴 Interactive 3D photo cards floating in space
-- 🖱️ Mouse-responsive camera movement
-- ✨ Smooth animations and transitions
-- 🎨 Beautiful lighting and particle effects
-- 📱 Responsive design
+### 🎨 Visual Effects
+- **Bloom & Post-Processing** - Cinematic glow and depth of field
+- **Particle Galaxies** - Each galaxy is made of hundreds of colored particles
+- **Spiral Structures** - Galaxies with realistic rotational dynamics
+- **Background Stars** - 2000+ ambient stars creating depth
+- **Smooth Camera Transitions** - Fluid movement between views
 
-## Tech Stack
+### 🎵 Sound Design
+- **Ambient Space Drone** - Layered oscillators for atmosphere
+- **Interactive SFX** - Hover hum, warp sounds, and clicks
+- **Mute Toggle** - Control audio from the UI
 
-- **Next.js 15** - React framework
-- **React Three Fiber** - React renderer for Three.js
-- **Three.js** - 3D graphics library
+### 🎮 Controls
+- **Click** galaxies to enter
+- **Click** photos to view details
+- **ESC** to go back
+- **Arrow Keys** (←/→) navigate between photos
+- **Mouse** to look around
+
+## 🛠 Tech Stack
+
+- **[Next.js 15](https://nextjs.org)** - React framework with App Router
+- **[React Three Fiber](https://docs.pmnd.rs/react-three-fiber)** - React renderer for Three.js
+- **[Three.js](https://threejs.org)** - WebGL 3D library
+- **[@react-three/drei](https://github.com/pmndrs/drei)** - Useful helpers for R3F
+- **[@react-three/postprocessing](https://github.com/pmndrs/postprocessing)** - Post-processing effects
+- **[@react-spring/three](https://www.react-spring.dev/)** - Spring animations
 - **TypeScript** - Type safety
 - **Tailwind CSS** - Styling
+- **Web Audio API** - Procedural sound generation (no files!)
 
-## Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
-
-- Node.js 18+ 
+- Node.js 18+
 - npm or yarn
 
 ### Installation
@@ -45,53 +63,4 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
-
-### Adding Your Photos
-
-1. Place your photos in `/public/photos/` directory
-2. Update the photo paths in `app/page.tsx`:
-```typescript
-const photos = [
-  '/photos/photo1.jpg',
-  '/photos/photo2.jpg',
-  // Add more...
-];
-```
-
-## Project Structure
-```
-floating-memories/
-├── app/
-│   ├── page.tsx          # Main 3D gallery component
-│   └── layout.tsx        # App layout
-├── public/
-│   └── photos/           # Your photo files
-├── package.json
-└── README.md
-```
-
-## Controls
-
-- **Mouse Move**: Camera follows your cursor
-- **Click Card**: Bring card forward and flip
-- **Scroll**: Zoom in/out (if implemented)
-
-## Customization
-
-You can customize:
-- Number of cards
-- Card size and spacing
-- Animation speed
-- Lighting and colors
-- Particle effects
-
-Edit values in `app/page.tsx` to experiment!
-
-## Development Notes
-
-Built as a learning project to practice:
-- Three.js fundamentals
-- React Three Fiber
-- 3D transformations and animations
-- Interactive 3D experiences
+Open [http://localhost:3000](http://localhost:3000) to see the magic ✨
