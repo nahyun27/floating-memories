@@ -142,7 +142,12 @@ interface GalaxyData {
   photoTitle: string;
   photoDate: string;
   photoDesc: string;
-  photos: PhotoMetadata[]; // populated at runtime
+  // Visual DNA — each galaxy has its own personality
+  arms: number;         // spiral arm count
+  thickness: number;    // disc height multiplier (0.3=flat, 1.5=puffy)
+  spinSpeed: number;    // rotation speed multiplier
+  coreGlow: number;     // core point-light intensity multiplier
+  photos: PhotoMetadata[];
 }
 
 const MAX_PHOTOS_PER_GALAXY = 8;
@@ -152,13 +157,14 @@ const GALAXY_CONFIGS: Omit<GalaxyData, 'photos'>[] = [
   {
     id: 'special',
     name: "Special Moments 🎉",
-    color: "#ffaa00",
+    color: "#ffdd00",
     position: [-22, 8, -10],
     rotation: [0.3, 0.5, 0.2],
     folder: 'special',
     photoTitle: 'Special Moment',
     photoDate: '2025',
     photoDesc: 'Those rare, golden moments that make life extraordinary. Times we want to hold onto forever.',
+    arms: 2, thickness: 0.4, spinSpeed: 1.6, coreGlow: 2.2,  // starburst: 2 bright arms, fast, golden burst
   },
   {
     id: 'style',
@@ -170,6 +176,7 @@ const GALAXY_CONFIGS: Omit<GalaxyData, 'photos'>[] = [
     photoTitle: 'Style Snapshot',
     photoDate: '2024-2025',
     photoDesc: 'Fashion experiments, new haircuts, and style evolution. Confidence captured.',
+    arms: 6, thickness: 0.2, spinSpeed: 0.7, coreGlow: 1.0,  // elegant: many fine-arm flat disc, slow & graceful
   },
   {
     id: 'travel',
@@ -181,17 +188,19 @@ const GALAXY_CONFIGS: Omit<GalaxyData, 'photos'>[] = [
     photoTitle: 'Adventure',
     photoDate: 'Dec 2023',
     photoDesc: 'Exploring new places around the world. Every street corner had a story.',
+    arms: 3, thickness: 0.8, spinSpeed: 1.0, coreGlow: 1.4,  // expansive: wide spread disc, classic galaxy feel
   },
   {
     id: 'cafes',
     name: "Coffee Shops ☕",
-    color: "#aa6644",
+    color: "#cc8855",
     position: [-5, -16, -5],
     rotation: [-0.6, 0.7, 0.1],
     folder: 'cafes',
     photoTitle: 'Café Moment',
     photoDate: 'Jan 2024',
     photoDesc: 'Caffeine-fueled adventures. Finding the perfect corner in every city.',
+    arms: 2, thickness: 1.2, spinSpeed: 0.5, coreGlow: 0.9,  // cozy: compact fluffy 2-arm, slow & warm
   },
   {
     id: 'food',
@@ -203,6 +212,7 @@ const GALAXY_CONFIGS: Omit<GalaxyData, 'photos'>[] = [
     photoTitle: 'Delicious Moment',
     photoDate: '2024',
     photoDesc: 'Every meal is a memory. From street food to home cooking, a journey through flavours.',
+    arms: 4, thickness: 0.6, spinSpeed: 1.2, coreGlow: 1.2,  // vibrant: irregular 4-arm scatter, medium spin
   },
   {
     id: 'climbing',
@@ -214,6 +224,7 @@ const GALAXY_CONFIGS: Omit<GalaxyData, 'photos'>[] = [
     photoTitle: 'Summit',
     photoDate: '2024',
     photoDesc: 'Reaching new heights, one hold at a time. The wall, the sweat, and the view from the top.',
+    arms: 3, thickness: 0.35, spinSpeed: 1.8, coreGlow: 1.6, // energetic: fast-spinning flat disc, intense core
   },
   {
     id: 'spring',
@@ -225,17 +236,19 @@ const GALAXY_CONFIGS: Omit<GalaxyData, 'photos'>[] = [
     photoTitle: 'Blossom',
     photoDate: 'Spring 2024',
     photoDesc: 'Cherry blossoms, warm breezes, and the brief beauty of spring. A season that never lasts long enough.',
+    arms: 5, thickness: 0.9, spinSpeed: 0.6, coreGlow: 1.8,  // petal-like: 5 soft arms, gentle float, rosy glow
   },
   {
     id: 'cooking',
     name: "Cooking 👨‍🍳",
-    color: "#ff00aa",
+    color: "#ff4488",
     position: [-30, 14, -20],
     rotation: [-0.2, 0.6, -0.5],
     folder: 'cooking',
     photoTitle: 'Recipe',
     photoDate: '2024',
     photoDesc: 'From prep to plating — the art of turning ingredients into something special.',
+    arms: 3, thickness: 1.0, spinSpeed: 1.3, coreGlow: 1.5,  // passionate: hot-pink, medium spin, vivid core
   },
 ];
 
@@ -459,12 +472,17 @@ function GalaxyParticleCluster({
   galaxy: GalaxyData;
   onClick: () => void;
 }) {
-  // Scale everything by photo count: 0 photos = small, 8 = large
+  // Scale by photo count
   const photoCount = galaxy.photos.length;
-  const sizeFactor = 0.5 + Math.min(photoCount / 8, 1) * 0.8; // 0.5 → 1.3
-  const count = Math.round(300 + photoCount * 55);             // 300 → 740
-  const discRadius = 2.5 + photoCount * 0.2;                  // 2.5 → 4.1
+  const sizeFactor = 0.5 + Math.min(photoCount / 8, 1) * 0.8;
+  const count = Math.round(300 + photoCount * 55);
+  const discRadius = 2.5 + photoCount * 0.2;
   const coreCount = 40 + photoCount * 8;
+  // Visual DNA
+  const arms = galaxy.arms ?? 3;
+  const thickness = galaxy.thickness ?? 0.6;
+  const spinSpeed = galaxy.spinSpeed ?? 1.0;
+  const coreGlow = galaxy.coreGlow ?? 1.4;
 
   const pointsRef = useRef<THREE.Points>(null);
   const coreRef = useRef<THREE.Points>(null);
@@ -480,13 +498,13 @@ function GalaxyParticleCluster({
     const corePos = new Float32Array(coreCount * 3);
 
     for (let i = 0; i < count; i++) {
-      const arm = Math.floor(Math.random() * 3);
+      const arm = Math.floor(Math.random() * arms);
       const t = Math.pow(Math.random(), 0.7);
       const r = 0.2 + t * discRadius;
-      const spiralAngle = t * Math.PI * 5 + (arm / 3) * Math.PI * 2;
-      const scatter = (1 - t) * 0.6 + 0.1;
+      const spiralAngle = t * Math.PI * (3 + arms * 0.5) + (arm / arms) * Math.PI * 2;
+      const scatter = (1 - t) * 0.6 + 0.08;
       pos[i * 3] = Math.cos(spiralAngle) * r + (Math.random() - 0.5) * scatter;
-      pos[i * 3 + 1] = (Math.random() - 0.5) * 0.5 * (1 - t * 0.7);
+      pos[i * 3 + 1] = (Math.random() - 0.5) * thickness * 0.5 * (1 - t * 0.7);
       pos[i * 3 + 2] = Math.sin(spiralAngle) * r + (Math.random() - 0.5) * scatter;
       const mixRatio = Math.min(r / discRadius, 1);
       const c = whiteColor.clone().lerp(baseColor, mixRatio * mixRatio);
@@ -497,24 +515,25 @@ function GalaxyParticleCluster({
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
       corePos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      corePos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta) * 0.4;
+      corePos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta) * thickness * 0.4;
       corePos[i * 3 + 2] = r * Math.cos(phi);
     }
     return [pos, col, corePos];
-  }, [galaxy.color, count, coreCount, discRadius]);
+  }, [galaxy.color, count, coreCount, discRadius, arms, thickness]);
 
   const initRot = galaxy.rotation ?? [0, 0, 0];
+  const baseSpeed = 0.10 * spinSpeed;
 
   useFrame((state, delta) => {
-    const speed = hovered ? 0.3 : 0.12;
+    const speed = hovered ? baseSpeed * 2.5 : baseSpeed;
     if (pointsRef.current) pointsRef.current.rotation.y += delta * speed;
     if (coreRef.current) {
       coreRef.current.rotation.y += delta * speed * 1.6;
-      const pulse = 1 + Math.sin(state.clock.elapsedTime * 2.5) * 0.1;
+      const pulse = 1 + Math.sin(state.clock.elapsedTime * (2 + spinSpeed)) * 0.1;
       coreRef.current.scale.setScalar(pulse);
     }
     if (ringRef.current) {
-      ringRef.current.rotation.z += delta * 0.03;
+      ringRef.current.rotation.z += delta * 0.025 * spinSpeed;
       const breathe = 1 + Math.sin(state.clock.elapsedTime * 1.1) * 0.04;
       ringRef.current.scale.setScalar(breathe);
     }
@@ -531,7 +550,7 @@ function GalaxyParticleCluster({
       scale={scale}
       rotation={initRot as [number, number, number]}
     >
-      <pointLight position={[0, 0, 0]} intensity={hovered ? 5 : 2.5} color={galaxy.color} distance={discRadius * 4} decay={2} />
+      <pointLight position={[0, 0, 0]} intensity={hovered ? 5 * coreGlow : 2 * coreGlow} color={galaxy.color} distance={discRadius * 4} decay={2} />
 
       {/* Outer dust ring */}
       <mesh ref={ringRef} rotation={[Math.PI / 2, 0, 0]}>
